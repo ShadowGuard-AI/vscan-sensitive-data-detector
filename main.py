@@ -70,6 +70,10 @@ def load_patterns(pattern_file: str = "patterns.txt") -> List[Tuple[str, str]]:
                 line = line.strip()
                 if line and not line.startswith("#"):
                     try:
+                        # Splitting on the first equals sign is what lets a pattern itself
+                        # contain equals signs, at the cost that a description never can.
+                        # A line with no equals is logged and skipped, so a typo in the
+                        # patterns file silently removes that check from the scan.
                         description, regex = line.split("=", 1)
                         patterns.append((description.strip(), regex.strip()))
                     except ValueError:
@@ -93,6 +97,11 @@ def scan_text(text: str, patterns: List[Tuple[str, str]]):
         try:
             for match in re.finditer(regex, text, re.IGNORECASE):
                 value = match.group(0)
+                # The hash is eight hex characters of a SHA-256 over the match. Two
+                # different secrets sharing that prefix are indistinguishable in a
+                # report, and short values, a four digit PIN for example, can be
+                # recovered from the hash by trying the small space of candidates.
+                # The redaction protects long secrets far better than short ones.
                 digest = hashlib.sha256(value.encode("utf-8", "ignore")).hexdigest()[:8]
                 matches.append(
                     {
@@ -172,7 +181,14 @@ def main():
         sys.exit(2)
 
     try:
+        # Dispatch is by prefix alone. A local file whose name begins with
+        # http is sent to the URL fetch, and a directory target reaches
+        # read_file and fails there with a file shaped error.
         if target.startswith("http://") or target.startswith("https://"):
+            # An error status body is scanned here exactly like a 200 body, by
+            # design: leaked stack traces live on error pages. The status is
+            # logged and then forgotten, so a finding carries no record of
+            # whether the page it came from was an error page.
             content, status = fetch_url(target)
             logging.info(f"Fetched {target} with status {status}; scanning the response body.")
         else:
@@ -183,6 +199,10 @@ def main():
 
     matches = scan_text(content, patterns)
 
+    # The in place guard only runs on the file branch. That is sound
+    # while a URL target can never equal a local path, but it means the
+    # check is tied to the dispatch above, not to the write below: any
+    # future target kind needs its own version of this test.
     if output_file and not (target.startswith("http://") or target.startswith("https://")):
         if os.path.realpath(output_file) == os.path.realpath(target):
             logging.error("Output file resolves to the input file: refusing in-place output.")
