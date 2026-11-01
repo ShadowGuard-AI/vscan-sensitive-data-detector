@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
 import logging
 import os
 import re
@@ -9,9 +10,8 @@ from typing import List, Tuple
 
 try:
     import requests
-    from bs4 import BeautifulSoup
 except ImportError:
-    print("Error: Please install required libraries: requests, beautifulsoup4")
+    print("Error: Please install the required library: requests")
     sys.exit(1)
 
 
@@ -43,6 +43,11 @@ def setup_argparse() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging."
+    )
+    parser.add_argument(
+        "--patterns",
+        default=None,
+        help="Path to a custom patterns file. Defaults to the patterns.txt shipped with this tool.",
     )
     return parser
 
@@ -77,47 +82,41 @@ def load_patterns(pattern_file: str = "patterns.txt") -> List[Tuple[str, str]]:
     return patterns
 
 
-def scan_text(text: str, patterns: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+def scan_text(text: str, patterns: List[Tuple[str, str]]):
     """
-    Scans the given text for matches against the provided regex patterns.
-
-    Args:
-        text (str): The text to scan.
-        patterns (List[Tuple[str, str]]): A list of tuples containing descriptions and regex patterns.
-
-    Returns:
-        List[Tuple[str, str]]: A list of tuples containing the description and matched text for each found match.
+    Scans text for matches. Returns findings with the matched value masked:
+    each finding carries the description, character position, line number,
+    length, and a short hash of the match, never the matched value itself.
     """
     matches = []
     for description, regex in patterns:
         try:
             for match in re.finditer(regex, text, re.IGNORECASE):
-                matches.append((description, match.group(0)))
+                value = match.group(0)
+                digest = hashlib.sha256(value.encode("utf-8", "ignore")).hexdigest()[:8]
+                matches.append(
+                    {
+                        "description": description,
+                        "position": match.start(),
+                        "line": text.count("\n", 0, match.start()) + 1,
+                        "length": len(value),
+                        "hash": digest,
+                        "masked": f"[REDACTED length={len(value)} sha256={digest}]",
+                    }
+                )
         except re.error as e:
             logging.error(f"Invalid regex pattern: {regex} - {e}")
     return matches
 
 
-def fetch_url(url: str) -> str:
+def fetch_url(url: str):
     """
-    Fetches the content of a URL.
-
-    Args:
-        url (str): The URL to fetch.
-
-    Returns:
-        str: The content of the URL as a string.
-
-    Raises:
-        requests.exceptions.RequestException: If the request fails.
+    Fetches a URL and returns (body, status code). Error status responses
+    are still responses: their bodies are returned and scanned, with the
+    status reported by the caller. Only connection level failures raise.
     """
-    try:
-        response = requests.get(url, timeout=10)  # Added timeout
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
-        return response.text
-    except requests.exceptions.RequestException as e:
-        logging.error(f"Error fetching URL: {url} - {e}")
-        raise
+    response = requests.get(url, timeout=10)
+    return response.text, response.status_code
 
 
 def read_file(filepath: str) -> str:
@@ -163,11 +162,19 @@ def main():
         logging.error("Target must be specified.")
         sys.exit(1)
 
-    patterns = load_patterns()
+    if args.patterns:
+        patterns_file = args.patterns
+    else:
+        patterns_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "patterns.txt")
+    patterns = load_patterns(patterns_file)
+    if not patterns:
+        logging.error(f"No patterns loaded from {patterns_file}: scan not performed. Add at least one description=regex line.")
+        sys.exit(2)
 
     try:
         if target.startswith("http://") or target.startswith("https://"):
-            content = fetch_url(target)
+            content, status = fetch_url(target)
+            logging.info(f"Fetched {target} with status {status}; scanning the response body.")
         else:
             content = read_file(target)
     except Exception as e:  # Catch general exceptions related to file/URL access
@@ -176,10 +183,16 @@ def main():
 
     matches = scan_text(content, patterns)
 
+    if output_file and not (target.startswith("http://") or target.startswith("https://")):
+        if os.path.realpath(output_file) == os.path.realpath(target):
+            logging.error("Output file resolves to the input file: refusing in-place output.")
+            sys.exit(1)
     if matches:
         output = []
-        for description, match in matches:
-            output.append(f"Description: {description}\nMatch: {match}\n")
+        for finding in matches:
+            output.append(
+                f"Description: {finding['description']}\nTarget: {target}\nLine: {finding['line']}\nPosition: {finding['position']}\nMatch: {finding['masked']}\n"
+            )
 
         output_string = "\n".join(output)
 
@@ -200,11 +213,5 @@ if __name__ == "__main__":
     main()
 
 
-# Example patterns.txt (create this file in the same directory)
-# API Key=AKIA[0-9A-Z]{16}
-# Password=password=[^\\s"']+
-# Secret Key=[sS][ecret][kK]ey=['\"][^'\"]+['\"]
-# Example usage:
-# python vscan.py my_source_code.txt
-# python vscan.py https://example.com/source_code.txt -o results.txt
-# python vscan.py my_source_code.txt -v
+# Patterns ship in patterns.txt next to this file. Use --patterns for a custom file.
+# Each non-comment line is description=regex.
