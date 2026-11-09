@@ -66,23 +66,33 @@ def load_patterns(pattern_file: str = "patterns.txt") -> List[Tuple[str, str]]:
     patterns = []
     try:
         with open(pattern_file, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    try:
-                        # Splitting on the first equals sign is what lets a pattern itself
-                        # contain equals signs, at the cost that a description never can.
-                        # A line with no equals is logged and skipped, so a typo in the
-                        # patterns file silently removes that check from the scan.
-                        description, regex = line.split("=", 1)
-                        patterns.append((description.strip(), regex.strip()))
-                    except ValueError:
-                        logging.warning(
-                            f"Invalid pattern format in {pattern_file}: {line}"
-                        )
+            lines = f.readlines()
     except FileNotFoundError:
         logging.error(f"Pattern file not found: {pattern_file}")
         sys.exit(1)
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        # Splitting on the first equals sign is what lets a pattern itself
+        # contain equals signs, at the cost that a description never can.
+        # A malformed line or an invalid regex is fatal, not skipped: a
+        # silently dropped pattern would remove that check from the scan
+        # and the run could still report a clean verdict.
+        if "=" not in line:
+            logging.error(f"Invalid pattern format in {pattern_file}: {line}")
+            sys.exit(2)
+        description, regex = line.split("=", 1)
+        description, regex = description.strip(), regex.strip()
+        if not description or not regex:
+            logging.error(f"Invalid pattern format in {pattern_file}: {line}")
+            sys.exit(2)
+        try:
+            re.compile(regex)
+        except re.error as e:
+            logging.error(f"Invalid regex in {pattern_file}: {regex} - {e}")
+            sys.exit(2)
+        patterns.append((description, regex))
     return patterns
 
 
@@ -191,6 +201,9 @@ def main():
             # whether the page it came from was an error page.
             content, status = fetch_url(target)
             logging.info(f"Fetched {target} with status {status}; scanning the response body.")
+        elif os.path.isdir(target):
+            logging.error(f"Target is a directory, not a file: {target}")
+            sys.exit(1)
         else:
             content = read_file(target)
     except Exception as e:  # Catch general exceptions related to file/URL access
@@ -223,6 +236,7 @@ def main():
                 logging.info(f"Results saved to {output_file}")
             except IOError as e:
                 logging.error(f"Error writing to output file: {output_file} - {e}")
+                sys.exit(1)
         else:
             print(output_string)
     else:

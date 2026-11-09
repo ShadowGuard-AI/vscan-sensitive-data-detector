@@ -9,17 +9,17 @@ Responses with an error status are still scanned: an HTTP error page is a respon
 `git clone https://github.com/ShadowGuard-AI/vscan-sensitive-data-detector`
 
 ## Patterns
-The tool ships with a default `patterns.txt` next to `main.py`, so a normal run works without setup. Each non-comment line is in the form `description=regex`. Use `--patterns PATH` to name a custom patterns file. A missing patterns file fails with an error naming the missing file. If a patterns file loads zero patterns, the run exits non-zero with a not-performed message and prints no clean verdict.
+The tool ships with a default `patterns.txt` next to `main.py`, so a normal run works without setup. Each non-comment line is in the form `description=regex`. Use `--patterns PATH` to name a custom patterns file. A missing patterns file fails with an error naming the missing file. If a patterns file loads zero patterns, the run exits non-zero with a not-performed message and prints no clean verdict. A malformed pattern line or an invalid regex is also fatal: the run exits non-zero before scanning, rather than silently dropping that check.
 
 ## Usage
 `python3 main.py TARGET [-o OUTPUT] [-v] [--patterns PATH]`
 
 ## Parameters
-- `target`: The target (file or URL) to scan.
+- `target`: The target (file or URL) to scan. A directory target is rejected with an error.
 - `-h`: Show help message and exit
-- `-o`: Output file to save results. If not specified, prints to console. An output path that resolves to the input file is refused.
+- `-o`: Output file to save results. If not specified, prints to console. An output path that resolves to the input file is refused. If the output file cannot be written, the run exits non-zero.
 - `-v`: Enable verbose logging.
 - `--patterns`: Path to a custom patterns file.
 
 ## License
-Copyright (c) ShadowGuardAI
+MIT (see the LICENSE file)
